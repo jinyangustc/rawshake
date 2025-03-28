@@ -61,18 +61,18 @@ except KeyboardInterrupt:
 
 The GeoReader class accepts the following configuration parameters:
 
-- `port`: Serial port to connect to (default: '/dev/serial0')
-- `baudrate`: Baud rate for serial communication (default: 230400)
-- `timeout`: Serial port timeout in seconds (default: None)
-- `poll_interval`: How frequently to poll for new data in seconds (default: 0.1)
-- `n_frames`: Number of frames to collect for each message (default: 4)
-- `frame_interval`: Time interval between frames in milliseconds (default: 250)
+- `port`: Serial port to connect to (default: `'/dev/serial0'`)
+- `baudrate`: Baud rate for serial communication (default: `230400`)
+- `timeout`: Serial port timeout in seconds (default: `None`)
+- `poll_interval`: How frequently to poll for new data in seconds (default: `0.1`)
+- `n_frames`: Number of frames to collect for each message (default: `4`)
+- `frame_interval`: Time interval between frames in milliseconds (default: `250`)
 
 ## Message Format
 
 The library processes geophone data into `GeoMsg` objects containing:
 - Timestamp information
-- Channel data (RS1D: SH3, RS4D: EH3, EN1, EN2, EN3)
+- Channel data (RS1D: SH3; RS4D: EH3, EN1, EN2, EN3)
 - Frame metadata
 
 ## Logging

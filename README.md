@@ -41,15 +41,13 @@ pip install git+https://github.com/jinyangustc/rawshake.git
 ```python
 from rawshake.geophone import GeoReader
 
-reader = GeoReader(port='/dev/serial0', baudrate=230400)
+reader = GeoReader()
 reader.start()
 
 try:
     while True:
-        # Get the next message (timeout after 1 second)
         msg = reader.get(timeout=1.0)
         if msg:
-            # Process the message
             timestamp, samples = get_samples(msg)
             print(f"Timestamp: {timestamp}")
             print(f"Samples: {samples}")

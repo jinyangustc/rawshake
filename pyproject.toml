@@ -1,6 +1,6 @@
 [project]
 name = "rawshake"
-version = "0.1.0"
+dynamic = ["version"]
 description = "A Python library for reading raw data directly from Raspberry Shake geophones without ShakeOS or seimology software"
 readme = "README.md"
 license = "MIT"
@@ -22,6 +22,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.metadata]
 allow-direct-references = true
+
+[tool.hatch.version]
+path = "src/rawshake/__init__.py"
 
 [tool.ruff]
 lint.extend-select = ['Q', 'RUF100', 'C90', 'I']

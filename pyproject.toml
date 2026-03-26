@@ -35,3 +35,13 @@ format = { quote-style = 'single' }
 
 [tool.uv.pip]
 generate-hashes = true
+
+
+[tool.basedpyright]
+typeCheckingMode = "recommended"
+reportAny = false
+reportExplicitAny = false
+reportImplicitOverride = false
+reportImplicitStringConcatenation = false
+reportMissingTypeArgument = false
+reportUnknownLambdaType = false

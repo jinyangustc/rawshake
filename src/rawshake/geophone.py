@@ -4,13 +4,16 @@ import queue
 import threading
 import time
 from collections import defaultdict, deque
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Any
 
 import serial
 
-RS1D_CHANNELS = ['SH3']
-RS4D_CHANNELS = ['EH3', 'EN1', 'EN2', 'EN3']
+DEVICE_CHANNELS: dict[str, list[str]] = {
+    'RS1D': ['SH3'],
+    'RS4D': ['EH3', 'EN1', 'EN2', 'EN3'],
+}
 
 logger = logging.getLogger(__name__)
 
@@ -89,11 +92,18 @@ class GeoMsgFrame:
     """
 
     _timestamp: dict[str, int]
-    _channels: dict[str, dict]
+    _channels: dict[str, dict[str, Any]]
 
     @property
     def timestamp(self) -> int:
         return self._timestamp['MSEC']
+
+    @property
+    def timestamp_ns(self) -> int:
+        return self._timestamp['timestamp_ns']
+
+    def __iter__(self) -> Iterator[tuple[str, list[str]]]:
+        return ((ch, data['DS']) for ch, data in self._channels.items())
 
 
 @dataclass
@@ -152,17 +162,18 @@ def get_samples(msg: GeoMsg) -> tuple[int, dict[str, list[int]]]:
     """
     assert len(msg.frames) == msg.n_frames
 
-    result = defaultdict(list)
+    buffer: defaultdict[str, list[str]] = defaultdict(list)
     prev_timestamp = -1
     for frame in msg.frames:
-        for ch, ch_data in frame._channels.items():
-            result[ch].extend(ch_data['DS'])
+        for ch, samples in frame:
+            buffer[ch].extend(samples)
             assert frame.timestamp > prev_timestamp
             prev_timestamp = frame.timestamp
 
-    for k, v in result.items():
+    result: dict[str, list[int]] = {}
+    for k, v in buffer.items():
         result[k] = [hex_to_signed(x, bits=16) for x in v]
-    return msg.frames[0]._timestamp['timestamp_ns'], dict(result)
+    return msg.frames[0].timestamp_ns, result
 
 
 class GeoMsgAssembler:
@@ -191,29 +202,26 @@ class GeoMsgAssembler:
         n_frames: int,
         frame_interval: int = 250,
     ):
-        self.device_type = device_type
-        self.n_frames = n_frames
-        self.frame_interval = frame_interval
+        self.device_type: str = device_type
+        self.n_frames: int = n_frames
+        self.frame_interval: int = frame_interval
 
-        if self.device_type == 'RS1D':
-            self.channels = sorted(RS1D_CHANNELS)
-        elif self.device_type == 'RS4D':
-            self.channels = sorted(RS4D_CHANNELS)
-        else:
-            raise ValueError(f'unsuported device type: {self.device_type}')
+        if device_type not in DEVICE_CHANNELS:
+            raise ValueError(f'unsupported device type: {device_type}')
+        self.channels: list[str] = sorted(DEVICE_CHANNELS[device_type])
 
         # good frame:
         #    RS1D: {MSEC}{SH3} | {MSEC}{SH3}
         #    RS4D: {MSEC}{EN1}{EN2}{EN3}{EH3} | {MSEC}{EN1}{EN2}{EN3}{EH3}
-        self.serial_dq = deque()  # type: deque[dict]
-        self.frame_dq = deque()  # type: deque[GeoMsgFrame]
+        self.serial_dq: deque[dict[str, Any]] = deque()
+        self.frame_dq: deque[GeoMsgFrame] = deque()
 
-    def add(self, serial_msg: dict) -> None:
+    def add(self, serial_msg: dict[str, Any]) -> None:
         self.serial_dq.append(serial_msg)
 
         # seek the beginning of a frame
         while self.serial_dq and 'MSEC' not in self.serial_dq[0]:
-            self.serial_dq.popleft()
+            _ = self.serial_dq.popleft()
 
         # a frame contains 1 header and n_channels data segments
         if len(self.serial_dq) < 1 + len(self.channels):
@@ -260,7 +268,7 @@ class GeoMsgAssembler:
         return msg
 
     def __repr__(self) -> str:
-        serial_buffer = []
+        serial_buffer: list[str] = []
         for x in self.serial_dq:
             if 'MSEC' in x:
                 serial_buffer.append(f'MSEC-{x["MSEC"]}')
@@ -270,7 +278,9 @@ class GeoMsgAssembler:
         return f'serial_buffer={serial_buffer}, frame_buffer={frame_buffer}'
 
 
-def parse_buffer(buffer: str, decoder: json.JSONDecoder) -> Tuple[List[Dict], str]:
+def parse_buffer(
+    buffer: str, decoder: json.JSONDecoder
+) -> tuple[list[dict[str, Any]], str]:
     """
     Parse complete JSON objects from the buffer.
 
@@ -295,7 +305,7 @@ def parse_buffer(buffer: str, decoder: json.JSONDecoder) -> Tuple[List[Dict], st
     The function attempts to parse complete JSON objects from the start of the buffer.
     Invalid messages and non-JSON data are filtered out.
     """
-    messages = []
+    messages: list[Any] = []
     while buffer:
         try:
             # try to decode a JSON object from the start of the buffer
@@ -328,7 +338,7 @@ def parse_buffer(buffer: str, decoder: json.JSONDecoder) -> Tuple[List[Dict], st
 
 
 def read_geophone(
-    msg_queue: queue.Queue,
+    msg_queue: queue.Queue[GeoMsg],
     port: str = '/dev/serial0',
     baudrate: int = 230_400,
     timeout: int | None = None,
@@ -464,9 +474,9 @@ class GeoReader:
         n_frames: int = 4,
         frame_interval: int = 250,
     ):
-        self.msg_queue = queue.Queue()
-        self.stop_event = threading.Event()
-        self.thread = threading.Thread(
+        self.msg_queue: queue.Queue[GeoMsg] = queue.Queue()
+        self.stop_event: threading.Event = threading.Event()
+        self.thread: threading.Thread = threading.Thread(
             target=read_geophone,
             args=(self.msg_queue,),
             kwargs={

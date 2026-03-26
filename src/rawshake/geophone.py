@@ -6,11 +6,14 @@ import time
 from collections import defaultdict, deque
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal, TypeAlias
 
 import serial
 
-DEVICE_CHANNELS: dict[str, list[str]] = {
+Nanoseconds: TypeAlias = int
+Channel: TypeAlias = Literal['SH3', 'EH3', 'EN1', 'EN2', 'EN3']
+
+DEVICE_CHANNELS: dict[str, list[Channel]] = {
     'RS1D': ['SH3'],
     'RS4D': ['EH3', 'EN1', 'EN2', 'EN3'],
 }
@@ -83,7 +86,7 @@ class GeoMsgFrame:
     ----------
     _timestamp : dict[str, int]
         Dictionary containing timestamp information with 'MSEC' key and timestamp_ns
-    _channels : dict[str, dict]
+    _channels : dict[Channel, dict[str, Any]]
         Dictionary mapping channel names to their data
 
     Notes
@@ -92,7 +95,7 @@ class GeoMsgFrame:
     """
 
     _timestamp: dict[str, int]
-    _channels: dict[str, dict[str, Any]]
+    _channels: dict[Channel, dict[str, Any]]
 
     @property
     def timestamp(self) -> int:
@@ -102,7 +105,7 @@ class GeoMsgFrame:
     def timestamp_ns(self) -> int:
         return self._timestamp['timestamp_ns']
 
-    def __iter__(self) -> Iterator[tuple[str, list[str]]]:
+    def __iter__(self) -> Iterator[tuple[Channel, list[str]]]:
         return ((ch, data['DS']) for ch, data in self._channels.items())
 
 
@@ -139,7 +142,7 @@ def hex_to_signed(hex_str: str, bits: int = 16) -> int:
     return value
 
 
-def get_samples(msg: GeoMsg) -> tuple[int, dict[str, list[int]]]:
+def get_samples(msg: GeoMsg) -> tuple[Nanoseconds, dict[Channel, list[int]]]:
     """
     Extract timestamp and sample data from a GeoMsg object.
 
@@ -150,7 +153,7 @@ def get_samples(msg: GeoMsg) -> tuple[int, dict[str, list[int]]]:
 
     Returns
     -------
-    tuple[int, dict[str, list[int]]]
+    tuple[Nanoseconds, dict[Channel, list[int]]]
         A tuple containing:
         - timestamp in nanoseconds
         - dictionary mapping channel names to lists of signed integer samples
@@ -162,7 +165,7 @@ def get_samples(msg: GeoMsg) -> tuple[int, dict[str, list[int]]]:
     """
     assert len(msg.frames) == msg.n_frames
 
-    buffer: defaultdict[str, list[str]] = defaultdict(list)
+    buffer: defaultdict[Channel, list[str]] = defaultdict(list)
     prev_timestamp = -1
     for frame in msg.frames:
         for ch, samples in frame:
@@ -170,7 +173,7 @@ def get_samples(msg: GeoMsg) -> tuple[int, dict[str, list[int]]]:
             assert frame.timestamp > prev_timestamp
             prev_timestamp = frame.timestamp
 
-    result: dict[str, list[int]] = {}
+    result: dict[Channel, list[int]] = {}
     for k, v in buffer.items():
         result[k] = [hex_to_signed(x, bits=16) for x in v]
     return msg.frames[0].timestamp_ns, result
@@ -208,7 +211,7 @@ class GeoMsgAssembler:
 
         if device_type not in DEVICE_CHANNELS:
             raise ValueError(f'unsupported device type: {device_type}')
-        self.channels: list[str] = sorted(DEVICE_CHANNELS[device_type])
+        self.channels: list[Channel] = sorted(DEVICE_CHANNELS[device_type])
 
         # good frame:
         #    RS1D: {MSEC}{SH3} | {MSEC}{SH3}
@@ -293,9 +296,9 @@ def parse_buffer(
 
     Returns
     -------
-    Tuple[List[Dict], str]
+    tuple[list[dict[str, Any]], str]
         A tuple containing:
-        - messages : List[Dict]
+        - messages : list[dict[str, Any]]
             A list of parsed serial messages (JSON objects as dictionaries).
         - buffer : str
             The remaining buffer after extracting complete serial messages.
@@ -431,7 +434,7 @@ def read_geophone(
             time.sleep(poll_interval)
 
     except KeyboardInterrupt:
-        logger.info('Existing read_geohpone')
+        logger.info('Exiting read_geophone')
     except Exception as e:
         logger.error(f'Error reading from port {port}: {e}')
     finally:

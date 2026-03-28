@@ -258,6 +258,9 @@ def parse_buffer(
         try:
             # try to decode a JSON object from the start of the buffer
             msg, idx = decoder.raw_decode(buffer)
+            if not isinstance(msg, dict):
+                buffer = buffer[idx:].lstrip()
+                continue
             if 'MSEC' in msg:
                 msg['timestamp_ns'] = time.time_ns()
             messages.append(msg)

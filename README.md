@@ -19,11 +19,13 @@ serial connection, without requiring Shake OS or any other seismology software.
 ## Installation
 
 Using `uv` (recommended):
+
 ```bash
 uv add git+https://github.com/jinyangustc/rawshake.git
 ```
 
 Or add to your project's `pyproject.toml`:
+
 ```toml
 [project]
 dependencies = [
@@ -32,6 +34,7 @@ dependencies = [
 ```
 
 Using pip:
+
 ```bash
 pip install git+https://github.com/jinyangustc/rawshake.git
 ```
@@ -69,25 +72,10 @@ The GeoReader class accepts the following configuration parameters:
 ## Message Format
 
 The library processes geophone data into `GeoMsg` objects containing:
+
 - Timestamp information
 - Channel data (RS1D: SH3; RS4D: EH3, EN1, EN2, EN3)
 - Frame metadata
-
-## Logging
-
-Configure logging using the `get_logger` function:
-
-```python
-from rawshake.geophone import get_logger
-import logging
-
-# Use custom logger
-my_logger = logging.getLogger('my_app')
-get_logger(user_logger=my_logger)
-
-# Or configure the default logger
-get_logger(level=logging.DEBUG)
-```
 
 ## Contributing
 

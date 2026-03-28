@@ -112,11 +112,13 @@ def get_samples(msg: GeoMsg) -> tuple[Nanoseconds, dict[Channel, list[int]]]:
 
     buffer: defaultdict[Channel, list[str]] = defaultdict(list)
     prev_timestamp = -1
-    for frame in msg.frames:
+    for i, frame in enumerate(msg.frames):
+        assert frame.timestamp > prev_timestamp, (
+            f'frame {i} out of order: {[f.timestamp for f in msg.frames]}'
+        )
+        prev_timestamp = frame.timestamp
         for ch, samples in frame:
             buffer[ch].extend(samples)
-            assert frame.timestamp > prev_timestamp
-            prev_timestamp = frame.timestamp
 
     result: dict[Channel, list[int]] = {}
     for k, v in buffer.items():

@@ -1,6 +1,6 @@
 [private]
 default:
-    @just -g --list
+    @just -f {{ justfile() }} --list
 
 # rsync code to shake for on-device testing
 sync target:

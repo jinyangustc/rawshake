@@ -19,62 +19,7 @@ DEVICE_CHANNELS: dict[str, list[Channel]] = {
 }
 
 logger = logging.getLogger(__name__)
-
-
-def get_logger(
-    user_logger: logging.Logger | None = None,
-    level: int | None = None,
-    handler: logging.Handler | None = None,
-) -> None:
-    """
-    Configure logging for the library.
-
-    Parameters
-    ----------
-    user_logger : logging.Logger or None, optional
-        If provided, the library will use this logger instead of its own
-    level : int or None, optional
-        If provided and no user_logger is given, sets the log level
-    handler : logging.Handler or None, optional
-        If provided and no user_logger is given, adds this handler
-
-    Notes
-    -----
-    This function configures the global logger for the library. If a user_logger
-    is provided, it will be used directly. Otherwise, it configures the default
-    logger with the specified level (defaults to DEBUG) and handler (defaults to
-    StreamHandler).
-    """
-    global logger
-
-    if user_logger is not None:
-        # Use the user-provided logger
-        logger = user_logger
-        return
-
-    # Configure our default logger
-    if level is None:
-        level = logging.DEBUG
-
-    if handler is None:
-        handler = logging.StreamHandler()
-        # formatter = logging.Formatter(
-        #     '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        # )
-        # handler.setFormatter(formatter)
-
-    logger.setLevel(level)
-
-    # Remove all existing handlers to avoid duplicate messages
-    for h in logger.handlers[:]:
-        logger.removeHandler(h)
-
-    logger.addHandler(handler)
-    logger.propagate = False  # Prevent propagation to root logger
-
-
-# Set up default configuration when module is imported
-get_logger()
+logger.addHandler(logging.NullHandler())
 
 
 @dataclass
@@ -546,4 +491,5 @@ def _main():
 
 
 if __name__ == '__main__':
+    logging.basicConfig(level=logging.DEBUG)
     _main()

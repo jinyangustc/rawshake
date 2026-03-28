@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import queue
 import threading
 import time
@@ -20,6 +21,8 @@ DEVICE_CHANNELS: dict[str, list[Channel]] = {
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
+
+_RAWSHAKE_DEBUG = os.environ.get('RAWSHAKE_DEBUG', '0') == '1'
 
 
 @dataclass
@@ -347,7 +350,8 @@ def read_geophone(
     try:
         while not (stop_event and stop_event.is_set()):
             in_waiting = f' in waiting: {ser.in_waiting} '
-            logger.debug(f'{in_waiting:-^80}')
+            if _RAWSHAKE_DEBUG:
+                logger.debug(f'{in_waiting:-^80}')
             raw_data = ser.read(ser.in_waiting)
             if not raw_data:
                 time.sleep(poll_interval)
@@ -355,8 +359,9 @@ def read_geophone(
 
             try:
                 buffer += raw_data.decode('utf-8')
-                logger.debug(f' RAW | {raw_data}')
-                logger.debug(f'BUFF | {buffer}')
+                if _RAWSHAKE_DEBUG:
+                    logger.debug(f' RAW | {raw_data}')
+                    logger.debug(f'BUFF | {buffer}')
             except UnicodeDecodeError:
                 logger.warning('Received undecodable bytes, skipping chunks.')
                 time.sleep(poll_interval)
@@ -371,7 +376,8 @@ def read_geophone(
                     assembler = GeoMsgAssembler(device_type, n_frames, frame_interval)
 
                 i = f'M{i}'
-                logger.debug(f'{i:>4} | {msg}')
+                if _RAWSHAKE_DEBUG:
+                    logger.debug(f'{i:>4} | {msg}')
 
                 if assembler:
                     assembler.add(msg)
@@ -380,7 +386,8 @@ def read_geophone(
                     if geo_msg:
                         msg_queue.put(geo_msg)
 
-            logger.debug(f'ASMB | {assembler}')
+            if _RAWSHAKE_DEBUG:
+                logger.debug(f'ASMB | {assembler}')
             time.sleep(poll_interval)
 
     except KeyboardInterrupt:
@@ -486,9 +493,11 @@ def _main():
         while True:
             msg = reader.get(timeout=1.0)
             if msg:
-                logger.debug(f' GEO | {msg}')
+                if _RAWSHAKE_DEBUG:
+                    logger.debug(f' GEO | {msg}')
                 ts, samples = get_samples(msg)
-                logger.debug(f'SAMP | {ts} {samples}')
+                if _RAWSHAKE_DEBUG:
+                    logger.debug(f'SAMP | {ts} {samples}')
 
     except KeyboardInterrupt:
         print('\nStopping reader...')

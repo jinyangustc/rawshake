@@ -7,8 +7,8 @@ sync target:
     rsync -azvhP . {{ target }}:/ws/$(basename $PWD) --exclude='/.git' --filter=':- .gitignore' --delete
 
 # Run the geophone code and grep for a pattern
-grep PAT:
-    uv run src/rs_geo/geophone.py 2>&1 | grep --line-buffered "{{ PAT }}"
+grep PAT="*":
+    uv run src/rawshake/geophone.py 2>&1 | grep --line-buffered "{{ PAT }}"
 
 # Create a release
 tag:

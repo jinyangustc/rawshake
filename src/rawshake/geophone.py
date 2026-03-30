@@ -422,7 +422,10 @@ def read_geophone(  # noqa: C901
 
                     if geo_msg:
                         msg_queue.put(geo_msg)
-                        print(f'tx_offset: {assembler.tx_offset_ns / 1e6:.2f} ms')
+                        if _RAWSHAKE_DEBUG:
+                            logger.debug(
+                                f'tx_offset: {assembler.tx_offset_ns / 1e6:.2f} ms'
+                            )
 
             if _RAWSHAKE_DEBUG:
                 logger.debug(f'ASMB | {assembler}')

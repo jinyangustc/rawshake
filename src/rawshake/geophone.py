@@ -89,16 +89,16 @@ class GeoMsg:
 
 
 def hex_to_signed(hex_str: str) -> int:
-    """Convert a hex string to a signed integer.
+    """Convert a hex string to a signed 24-bit integer.
 
-    The device sends positive values as short hex strings and sign-extends
-    negatives to 32 bits (e.g. 'FFFFFA12'), so the bit width is inferred
-    from the string length (minimum 16 bits).
+    The device uses 24-bit ADC with clip level +/- 8,388,608 counts.
+    Positive values are sent as short hex strings (leading zeros stripped),
+    negatives may be sign-extended beyond 24 bits (e.g. 'FFFFFA12').
+    Mask to 24 bits before interpreting sign.
     """
-    bits = max(16, len(hex_str) * 4)
-    value = int(hex_str, 16)
-    if value >= (1 << (bits - 1)):
-        value -= 1 << bits
+    value = int(hex_str, 16) & 0xFFFFFF
+    if value >= (1 << 23):
+        value -= 1 << 24
     return value
 
 

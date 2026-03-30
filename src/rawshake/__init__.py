@@ -2,11 +2,12 @@
 
 __version__ = '0.1.10'
 
-from .geophone import GeoReader, read_geophone
+from .geophone import GeoReader, RawDecoder, read_geophone
 from .processing import RollingConditioner
 
 __all__ = [
     'read_geophone',
     'GeoReader',
+    'RawDecoder',
     'RollingConditioner',
 ]

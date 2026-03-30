@@ -7,7 +7,7 @@ import time
 from collections import defaultdict, deque
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any, Literal, TypeAlias
+from typing import Any, Literal, Protocol, TypeAlias
 
 import serial
 
@@ -18,6 +18,29 @@ DEVICE_CHANNELS: dict[str, list[Channel]] = {
     'RS1D': ['SH3'],
     'RS4D': ['EH3', 'EN1', 'EN2', 'EN3'],
 }
+
+
+class RawDecoder(Protocol):
+    """Protocol for JSON decoders used by parse_buffer.
+
+    Any object implementing raw_decode(s, idx) -> (obj, end_idx) satisfies
+    this protocol. The built-in json.JSONDecoder is the default implementation.
+
+    To use an alternative JSON library, wrap it so that raw_decode returns the
+    decoded object and the index immediately after the consumed text. Example
+    using msgspec::
+
+        import msgspec.json
+
+        class MsgspecDecoder:
+            def raw_decode(self, s: str, idx: int = 0) -> tuple[Any, int]:
+                obj = msgspec.json.decode(s[idx:])
+                # advance past the serialized object by re-encoding
+                end = idx + len(msgspec.json.encode(obj))
+                return obj, end
+    """
+
+    def raw_decode(self, s: str, idx: int = 0) -> tuple[Any, int]: ...
 
 
 logger = logging.getLogger(__name__)
@@ -271,9 +294,7 @@ class GeoMsgAssembler:
         return f'serial_buffer={serial_buffer}, frame_buffer={frame_buffer}'
 
 
-def parse_buffer(
-    buffer: str, decoder: json.JSONDecoder
-) -> tuple[list[dict[str, Any]], str]:
+def parse_buffer(buffer: str, decoder: RawDecoder) -> tuple[list[dict[str, Any]], str]:
     """
     Parse complete JSON objects from the buffer.
 
@@ -298,37 +319,30 @@ def parse_buffer(
     The function attempts to parse complete JSON objects from the start of the buffer.
     Invalid messages and non-JSON data are filtered out.
     """
-    messages: list[Any] = []
-    while buffer:
+    messages: list[dict[str, Any]] = []
+    idx = 0
+    length = len(buffer)
+    while idx < length:
+        # skip whitespace
+        while idx < length and buffer[idx] in ' \t\n\r':
+            idx += 1
+        if idx >= length:
+            break
         try:
-            # try to decode a JSON object from the start of the buffer
-            msg, idx = decoder.raw_decode(buffer)
-            if not isinstance(msg, dict):
-                buffer = buffer[idx:].lstrip()
-                continue
-            messages.append(msg)
-            # remove the processed message and any leading whitespace
-            buffer = buffer[idx:].lstrip()
+            msg, end_idx = decoder.raw_decode(buffer, idx)
+            if isinstance(msg, dict):
+                messages.append(msg)
+            idx = end_idx
         except json.JSONDecodeError:
-            # find the next possible start of a JSON object
-            start_idx = buffer.find('{')
-            if start_idx == -1:
-                # no valid JSON start found; clear the buffer
-                buffer = ''
+            if buffer[idx] == '{':
+                # incomplete object, wait for more data
                 break
-            elif start_idx > 0:
-                # discard any incomplete leading data and try again
-                buffer = buffer[start_idx:]
-                continue
-            else:
-                # buffer starts with '{' but isn't a complete JSON object
-                # wait for more data
+            next_brace = buffer.find('{', idx + 1)
+            if next_brace == -1:
+                idx = length  # no valid start found, clear buffer
                 break
-
-    # filter out invalid messages
-    messages = [x for x in messages if isinstance(x, dict)]
-
-    return messages, buffer
+            idx = next_brace
+    return messages, buffer[idx:]
 
 
 def read_geophone(  # noqa: C901
@@ -339,6 +353,7 @@ def read_geophone(  # noqa: C901
     n_frames: int = 4,
     frame_interval: int = 250,
     stop_event: threading.Event | None = None,
+    decoder: RawDecoder | None = None,
 ):
     """
     Read and parse raw data from the geophone of Raspberry Shake over the serial
@@ -362,6 +377,9 @@ def read_geophone(  # noqa: C901
         Frame length in milliseconds, by default 250
     stop_event : threading.Event or None, optional
         Event to signal the thread to stop, by default None
+    decoder : RawDecoder or None, optional
+        JSON decoder implementing raw_decode(s, idx) -> (obj, end_idx).
+        Defaults to json.JSONDecoder(). See RawDecoder for custom decoder docs.
 
     Notes
     -----
@@ -383,7 +401,8 @@ def read_geophone(  # noqa: C901
         return
 
     buffer = ''
-    decoder = json.JSONDecoder()
+    if decoder is None:
+        decoder = json.JSONDecoder()
     assembler = None
 
     try:
@@ -462,6 +481,9 @@ class GeoReader:
         Number of frames to collect for each message, by default 4
     frame_interval : int, optional
         Time interval between frames in milliseconds, by default 250
+    decoder : RawDecoder or None, optional
+        JSON decoder implementing raw_decode(s, idx) -> (obj, end_idx).
+        Defaults to json.JSONDecoder(). See RawDecoder for custom decoder docs.
 
     Notes
     -----
@@ -477,6 +499,7 @@ class GeoReader:
         read_timeout: float = 0.5,
         n_frames: int = 4,
         frame_interval: int = 250,
+        decoder: RawDecoder | None = None,
     ):
         self.msg_queue: queue.Queue[GeoMsg] = queue.Queue()
         self.stop_event: threading.Event = threading.Event()
@@ -490,6 +513,7 @@ class GeoReader:
                 'n_frames': n_frames,
                 'frame_interval': frame_interval,
                 'stop_event': self.stop_event,
+                'decoder': decoder,
             },
             daemon=True,
         )

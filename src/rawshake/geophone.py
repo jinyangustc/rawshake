@@ -19,6 +19,11 @@ DEVICE_CHANNELS: dict[str, list[Channel]] = {
     'RS4D': ['EH3', 'EN1', 'EN2', 'EN3'],
 }
 
+_TX_OFFSET_NS: dict[str, int] = {
+    'RS1D': 18_000_000,
+    'RS4D': 67_000_000,
+}
+
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
@@ -175,19 +180,8 @@ class GeoMsgAssembler:
         self.serial_dq: deque[dict[str, Any]] = deque()
         self.frame_dq: deque[GeoMsgFrame] = deque()
 
-        # Clock calibration: anchor the device MSEC counter to wall clock using
-        # recv_time_ns (stamped right after ser.read() returns), then derive all
-        # subsequent timestamps from the stable device-clock delta.
-        #
-        # We defer anchoring to M1 (the second consecutive MSEC) rather than M0
-        # because M0 and M1 may have arrived in the same read batch. M1 is the
-        # most recently transmitted frame, so its recv_time_ns best reflects the
-        # actual arrival time.
-        #
-        # Residual one-time anchor error: ~OS scheduling jitter (~few ms).
-        # After calibration: ts_ns = msec * 1_000_000 + _wall_offset_ns
         self._prev_msec: int | None = None
-        self._wall_offset_ns: int | None = None
+        self._tx_offset_ns: int = _TX_OFFSET_NS[device_type]
 
     def _calibrated_timestamp_ns(self, msec: int, recv_time_ns: int) -> int:
         if self._prev_msec is not None:
@@ -195,7 +189,7 @@ class GeoMsgAssembler:
                 f'MSEC not increasing by frame_interval: {self._prev_msec} -> {msec}'
             )
         self._prev_msec = msec
-        return recv_time_ns - (self.frame_interval * 1_000_000)
+        return recv_time_ns - (self.frame_interval * 1_000_000 + self._tx_offset_ns)
 
     def add(self, serial_msg: dict[str, Any], recv_time_ns: int) -> None:
         if 'MSEC' in serial_msg:
@@ -378,8 +372,6 @@ def read_geophone(  # noqa: C901
     decoder = json.JSONDecoder()
     assembler = None
 
-    bytes_per_geo_msg: int = 0
-
     try:
         while not (stop_event and stop_event.is_set()):
             if _RAWSHAKE_DEBUG:
@@ -401,7 +393,6 @@ def read_geophone(  # noqa: C901
                 continue
 
             msgs, buffer = parse_buffer(buffer, decoder)
-            bytes_per_geo_msg += len(raw_data)
             for i, msg in enumerate(msgs):
                 if assembler is None and 'MA' in msg:
                     # initialize assembler
@@ -423,10 +414,6 @@ def read_geophone(  # noqa: C901
 
                     if geo_msg:
                         msg_queue.put(geo_msg)
-                        print(
-                            f'tx_latency={bytes_per_geo_msg * 10 * 1000 / baudrate:.3f}ms'
-                        )
-                        bytes_per_geo_msg = 0
 
             if _RAWSHAKE_DEBUG:
                 logger.debug(f'ASMB | {assembler}')

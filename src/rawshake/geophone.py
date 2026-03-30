@@ -186,8 +186,8 @@ class GeoMsgAssembler:
     def add(self, serial_msg: dict[str, Any], recv_time_ns: int) -> None:
         serial_msg['_recv_ns'] = recv_time_ns
         if 'MSEC' in serial_msg:
+            serial_msg['_msec_recv_ns'] = recv_time_ns
             serial_msg['timestamp_ns'] = recv_time_ns - self._tx_offset_ns
-            # serial_msg['timestamp_ns'] = recv_time_ns
         self.serial_dq.append(serial_msg)
 
         # seek the beginning of a frame
@@ -238,9 +238,11 @@ class GeoMsgAssembler:
         frames = [self.frame_dq.popleft() for _ in range(self.n_frames)]
         msg = GeoMsg(frames, self.frame_interval, self.n_frames)
 
-        # --- calibrate TX offset from measured per-frame timing ---
+        # --- calibrate TX offset from raw (uncorrected) recv times ---
         tx_durations = [
-            f.last_recv_ns - f.timestamp_ns for f in frames if f.last_recv_ns
+            f.last_recv_ns - f._timestamp['_msec_recv_ns']
+            for f in frames
+            if f.last_recv_ns and '_msec_recv_ns' in f._timestamp
         ]
         if tx_durations:
             avg_tx_ns = sum(tx_durations) // len(tx_durations)

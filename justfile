@@ -2,6 +2,19 @@
 default:
     @just -f {{ justfile() }} --list
 
+# Format code with ruff
+fmt path=".":
+    uvx ruff check --select I --fix {{ path }}
+    uvx ruff format {{ path }}
+
+# Check code with ruff
+check path=".":
+    uvx ruff check {{ path }}
+
+# Fix code with ruff
+fix path=".":
+    uvx ruff check --fix {{ path }}
+
 # rsync code to shake for on-device testing
 sync target:
     rsync -azvhP . {{ target }}:/ws/$(basename $PWD) --exclude='/.git' --filter=':- .gitignore' --delete

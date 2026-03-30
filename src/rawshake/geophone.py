@@ -403,6 +403,8 @@ def read_geophone(  # noqa: C901
 
                     if geo_msg:
                         msg_queue.put(geo_msg)
+                        t1 = geo_msg.frames[0].timestamp_ns
+                        print(f'cap_to_pub latency: {(recv_time_ns - t1) / 1e6:.2f} ms')
 
             if _RAWSHAKE_DEBUG:
                 logger.debug(f'ASMB | {assembler}')

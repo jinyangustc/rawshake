@@ -49,7 +49,7 @@ class GeoMsgFrame:
 
     _timestamp: dict[str, int]
     _channels: dict[Channel, dict[str, Any]]
-    _bytes: int = 0
+    _last_recv_ns: int = 0
 
     @property
     def timestamp(self) -> int:
@@ -60,8 +60,8 @@ class GeoMsgFrame:
         return self._timestamp['timestamp_ns']
 
     @property
-    def frame_bytes(self) -> int:
-        return self._bytes
+    def last_recv_ns(self) -> int:
+        return self._last_recv_ns
 
     def __iter__(self) -> Iterator[tuple[Channel, list[str]]]:
         return ((ch, data['DS']) for ch, data in self._channels.items())
@@ -188,6 +188,7 @@ class GeoMsgAssembler:
         self._tx_offset_ns: int = _TX_OFFSET_NS[device_type]
 
     def add(self, serial_msg: dict[str, Any], recv_time_ns: int) -> None:
+        serial_msg['_recv_ns'] = recv_time_ns
         if 'MSEC' in serial_msg:
             # serial_msg['timestamp_ns'] = recv_time_ns - self._tx_offset_ns
             serial_msg['timestamp_ns'] = recv_time_ns
@@ -207,10 +208,8 @@ class GeoMsgAssembler:
             # a complete frame
             header = self.serial_dq.popleft()
             segments = [self.serial_dq.popleft() for _ in range(len(self.channels))]
-            frame_bytes = header.get('_bytes', 0) + sum(
-                s.get('_bytes', 0) for s in segments
-            )
-            frame = GeoMsgFrame(header, {x['CN']: x for x in segments}, frame_bytes)
+            last_recv_ns = segments[-1].get('_recv_ns', 0)
+            frame = GeoMsgFrame(header, {x['CN']: x for x in segments}, last_recv_ns)
             self.frame_dq.append(frame)
         else:
             # we should have enough serial messages, but cannot assemble a complete frame
@@ -290,10 +289,9 @@ def parse_buffer(
             if not isinstance(msg, dict):
                 buffer = buffer[idx:].lstrip()
                 continue
-            pre_len = len(buffer)
-            buffer = buffer[idx:].lstrip()
-            msg['_bytes'] = pre_len - len(buffer)
             messages.append(msg)
+            # remove the processed message and any leading whitespace
+            buffer = buffer[idx:].lstrip()
         except json.JSONDecodeError:
             # find the next possible start of a JSON object
             start_idx = buffer.find('{')
@@ -413,14 +411,16 @@ def read_geophone(  # noqa: C901
 
                     if geo_msg:
                         msg_queue.put(geo_msg)
-                        t1 = geo_msg.frames[0].timestamp_ns
-                        total_bytes = sum(f.frame_bytes for f in geo_msg.frames)
-                        # 8N1 = 10 bits per byte
-                        tx_ms = total_bytes * 10 / baudrate * 1000
+                        first_recv = geo_msg.frames[0].timestamp_ns
+                        last_recv = geo_msg.frames[-1].last_recv_ns
+                        span_ms = (last_recv - first_recv) / 1e6
+                        per_frame = [
+                            (f.last_recv_ns - f.timestamp_ns) / 1e6
+                            for f in geo_msg.frames
+                        ]
                         print(
-                            f'cap_to_pub latency: {(recv_time_ns - t1) / 1e6:.2f} ms'
-                            f' | frame_bytes: {total_bytes}'
-                            f' | tx_time: {tx_ms:.2f} ms'
+                            f'span: {span_ms:.2f} ms'
+                            f' | per-frame (msec->last_seg): {[f"{x:.1f}" for x in per_frame]}'
                         )
 
             if _RAWSHAKE_DEBUG:

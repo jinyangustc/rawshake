@@ -181,13 +181,13 @@ class GeoMsgAssembler:
         self.serial_dq: deque[dict[str, Any]] = deque()
         self.frame_dq: deque[GeoMsgFrame] = deque()
 
-        self._tx_offset_ns: int = 0
+        self._capture_delay_ns: int = 0
 
     def add(self, serial_msg: dict[str, Any], recv_time_ns: int) -> None:
         serial_msg['_recv_ns'] = recv_time_ns
         if 'MSEC' in serial_msg:
             serial_msg['_msec_recv_ns'] = recv_time_ns
-            serial_msg['timestamp_ns'] = recv_time_ns - self._tx_offset_ns
+            serial_msg['timestamp_ns'] = recv_time_ns - self._capture_delay_ns
         self.serial_dq.append(serial_msg)
 
         # seek the beginning of a frame
@@ -238,7 +238,9 @@ class GeoMsgAssembler:
         frames = [self.frame_dq.popleft() for _ in range(self.n_frames)]
         msg = GeoMsg(frames, self.frame_interval, self.n_frames)
 
-        # --- calibrate TX offset from raw (uncorrected) recv times ---
+        # --- calibrate capture delay from raw (uncorrected) recv times ---
+        # capture_delay = frame_interval - avg TX duration per frame
+        # This is the idle gap where the device captures data before transmitting.
         tx_durations = [
             f.last_recv_ns - f._timestamp['_msec_recv_ns']
             for f in frames
@@ -246,13 +248,13 @@ class GeoMsgAssembler:
         ]
         if tx_durations:
             avg_tx_ns = sum(tx_durations) // len(tx_durations)
-            self._tx_offset_ns = self.frame_interval * 1_000_000 - avg_tx_ns
+            self._capture_delay_ns = self.frame_interval * 1_000_000 - avg_tx_ns
 
         return msg
 
     @property
-    def tx_offset_ns(self) -> int:
-        return self._tx_offset_ns
+    def capture_delay_ns(self) -> int:
+        return self._capture_delay_ns
 
     def __repr__(self) -> str:
         serial_buffer: list[str] = []
@@ -424,7 +426,7 @@ def read_geophone(  # noqa: C901
                         msg_queue.put(geo_msg)
                         if _RAWSHAKE_DEBUG:
                             logger.debug(
-                                f'tx_offset: {assembler.tx_offset_ns / 1e6:.2f} ms'
+                                f'capture_delay: {assembler.capture_delay_ns / 1e6:.2f} ms'
                             )
 
             if _RAWSHAKE_DEBUG:

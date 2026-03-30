@@ -400,10 +400,8 @@ def read_geophone(  # noqa: C901
                 logger.warning('Received undecodable bytes, skipping chunks.')
                 continue
 
-            size_before = len(buffer)
             msgs, buffer = parse_buffer(buffer, decoder)
-            size_after = len(buffer)
-            bytes_parsed = size_before - size_after
+            bytes_per_geo_msg += len(raw_data)
             for i, msg in enumerate(msgs):
                 if assembler is None and 'MA' in msg:
                     # initialize assembler
@@ -421,7 +419,6 @@ def read_geophone(  # noqa: C901
 
                 if assembler:
                     assembler.add(msg, recv_time_ns)
-                    bytes_per_geo_msg += bytes_parsed
                     geo_msg = assembler.get()
 
                     if geo_msg:

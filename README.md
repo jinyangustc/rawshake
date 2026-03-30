@@ -108,8 +108,7 @@ The GeoReader class accepts the following configuration parameters:
 
 - `port`: Serial port to connect to (default: `'/dev/serial0'`)
 - `baudrate`: Baud rate for serial communication (default: `230400`)
-- `timeout`: Serial port timeout in seconds (default: `None`)
-- `poll_interval`: How frequently to poll for new data in seconds (default: `0.1`)
+- `read_timeout`: Serial read timeout in seconds; also the maximum latency for stop-event checks (default: `0.5`)
 - `n_frames`: Number of frames to collect for each message (default: `4`)
 - `frame_interval`: Time interval between frames in milliseconds (default: `250`)
 

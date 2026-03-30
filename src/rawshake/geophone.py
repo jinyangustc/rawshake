@@ -147,10 +147,6 @@ class GeoMsgAssembler:
         Number of frames to collect for a complete message
     frame_interval : int, optional
         Frame length in milliseconds, by default 250
-    calibration_frames : int, optional
-        Number of MSEC packets to average for the initial wall-clock offset,
-        by default 4. More frames reduce poll-jitter variance in the anchor
-        (error scales as poll_interval / (2 * sqrt(N))).
 
     Notes
     -----
@@ -179,23 +175,23 @@ class GeoMsgAssembler:
         self.serial_dq: deque[dict[str, Any]] = deque()
         self.frame_dq: deque[GeoMsgFrame] = deque()
 
-        # Clock calibration: anchor the device MSEC counter to wall clock once
-        # we confirm two consecutive MSECs, then derive all timestamps from the
-        # stable device-clock delta.
+        # Clock calibration: anchor the device MSEC counter to wall clock using
+        # recv_time_ns (stamped right after ser.read() returns), then derive all
+        # subsequent timestamps from the stable device-clock delta.
         #
         # We defer anchoring to M1 (the second consecutive MSEC) rather than M0
-        # because M1 just arrived — its buffer wait is [0, poll_interval]. M0 may
-        # have been sitting in the buffer alongside M1, making its effective wait
-        # up to frame_interval + poll_interval longer. No parameter estimation needed.
+        # because M0 and M1 may have arrived in the same read batch. M1 is the
+        # most recently transmitted frame, so its recv_time_ns best reflects the
+        # actual arrival time.
         #
-        # Residual one-time anchor error: [0, poll_interval] (~100ms at defaults).
+        # Residual one-time anchor error: ~OS scheduling jitter (~few ms).
         # After calibration: ts_ns = msec * 1_000_000 + _wall_offset_ns
         self._prev_msec: int | None = None
         self._wall_offset_ns: int | None = None
 
-    def _calibrated_timestamp_ns(self, msec: int) -> int:
+    def _calibrated_timestamp_ns(self, msec: int, recv_time_ns: int) -> int:
         if self._wall_offset_ns is None:
-            current_offset = time.time_ns() - msec * 1_000_000
+            current_offset = recv_time_ns - msec * 1_000_000
             if (
                 self._prev_msec is not None
                 and msec - self._prev_msec == self.frame_interval
@@ -206,10 +202,10 @@ class GeoMsgAssembler:
             return msec * 1_000_000 + current_offset
         return msec * 1_000_000 + self._wall_offset_ns
 
-    def add(self, serial_msg: dict[str, Any]) -> None:
+    def add(self, serial_msg: dict[str, Any], recv_time_ns: int) -> None:
         if 'MSEC' in serial_msg:
             serial_msg['timestamp_ns'] = self._calibrated_timestamp_ns(
-                serial_msg['MSEC']
+                serial_msg['MSEC'], recv_time_ns
             )
         self.serial_dq.append(serial_msg)
 
@@ -336,8 +332,7 @@ def read_geophone(  # noqa: C901
     msg_queue: queue.Queue[GeoMsg],
     port: str = '/dev/serial0',
     baudrate: int = 230_400,
-    timeout: int | None = None,
-    poll_interval: float = 0.1,
+    read_timeout: float = 0.5,
     n_frames: int = 4,
     frame_interval: int = 250,
     stop_event: threading.Event | None = None,
@@ -354,10 +349,10 @@ def read_geophone(  # noqa: C901
         Serial port to connect to, by default '/dev/serial0'
     baudrate : int, optional
         Baud rate for serial communication, by default 230400
-    timeout : int or None, optional
-        Serial port timeout in seconds, by default None
-    poll_interval : float, optional
-        How frequently the code polls the serial port for new data in seconds, by default 0.1s
+    read_timeout : float, optional
+        Serial read timeout in seconds, by default 0.5. The read blocks until bytes
+        arrive or this timeout expires; it also sets the maximum latency for checking
+        the stop_event.
     n_frames : int, optional
         Number of frames to collect for each message, by default 4
     frame_interval : int, optional
@@ -376,7 +371,9 @@ def read_geophone(  # noqa: C901
     The function can be interrupted by setting the stop_event or with Ctrl+C (KeyboardInterrupt).
     """
     try:
-        ser = serial.Serial(port, baudrate, timeout=timeout)
+        # timeout doubles as the stop-event check interval: ser.read() blocks
+        # until bytes arrive or timeout expires, so no explicit sleep is needed.
+        ser = serial.Serial(port, baudrate, timeout=read_timeout)
         logger.info(f'Connected to {port} at {baudrate} baud')
     except Exception as e:
         logger.error(f'Error opening {port}: {e}')
@@ -388,12 +385,13 @@ def read_geophone(  # noqa: C901
 
     try:
         while not (stop_event and stop_event.is_set()):
-            in_waiting = f' in waiting: {ser.in_waiting} '
             if _RAWSHAKE_DEBUG:
-                logger.debug(f'{in_waiting:-^80}')
-            raw_data = ser.read(ser.in_waiting)
+                logger.debug(f' in waiting: {ser.in_waiting} '.center(80, '-'))
+            # Block until at least 1 byte arrives (or timeout for stop-event check).
+            # Read all buffered bytes in one call to minimise subsequent read calls.
+            raw_data = ser.read(ser.in_waiting or 1)
+            recv_time_ns = time.time_ns()
             if not raw_data:
-                time.sleep(poll_interval)
                 continue
 
             try:
@@ -403,7 +401,6 @@ def read_geophone(  # noqa: C901
                     logger.debug(f'BUFF | {buffer}')
             except UnicodeDecodeError:
                 logger.warning('Received undecodable bytes, skipping chunks.')
-                time.sleep(poll_interval)
                 continue
 
             msgs, buffer = parse_buffer(buffer, decoder)
@@ -423,7 +420,7 @@ def read_geophone(  # noqa: C901
                     logger.debug(f'{i:>4} | {msg}')
 
                 if assembler:
-                    assembler.add(msg)
+                    assembler.add(msg, recv_time_ns)
                     geo_msg = assembler.get()
 
                     if geo_msg:
@@ -431,7 +428,6 @@ def read_geophone(  # noqa: C901
 
             if _RAWSHAKE_DEBUG:
                 logger.debug(f'ASMB | {assembler}')
-            time.sleep(poll_interval)
 
     except KeyboardInterrupt:
         logger.info('Exiting read_geophone')
@@ -452,10 +448,9 @@ class GeoReader:
         Serial port to connect to, by default '/dev/serial0'
     baudrate : int, optional
         Baud rate for serial communication, by default 230400
-    timeout : int or None, optional
-        Serial port timeout in seconds, by default None
-    poll_interval : float, optional
-        How frequently to poll the serial port for new data in seconds, by default 0.1
+    read_timeout : float, optional
+        Serial read timeout in seconds, by default 0.5. Sets the maximum latency
+        for checking the stop_event.
     n_frames : int, optional
         Number of frames to collect for each message, by default 4
     frame_interval : int, optional
@@ -472,8 +467,7 @@ class GeoReader:
         self,
         port: str = '/dev/serial0',
         baudrate: int = 230_400,
-        timeout: int | None = None,
-        poll_interval: float = 0.1,
+        read_timeout: float = 0.5,
         n_frames: int = 4,
         frame_interval: int = 250,
     ):
@@ -485,8 +479,7 @@ class GeoReader:
             kwargs={
                 'port': port,
                 'baudrate': baudrate,
-                'timeout': timeout,
-                'poll_interval': poll_interval,
+                'read_timeout': read_timeout,
                 'n_frames': n_frames,
                 'frame_interval': frame_interval,
                 'stop_event': self.stop_event,

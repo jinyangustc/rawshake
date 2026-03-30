@@ -82,8 +82,14 @@ class GeoMsg:
     n_frames: int = 4
 
 
-def hex_to_signed(hex_str: str, bits: int = 16) -> int:
-    """Convert a hex string to a signed integer with given bit length."""
+def hex_to_signed(hex_str: str) -> int:
+    """Convert a hex string to a signed integer.
+
+    The device sends positive values as short hex strings and sign-extends
+    negatives to 32 bits (e.g. 'FFFFFA12'), so the bit width is inferred
+    from the string length (minimum 16 bits).
+    """
+    bits = max(16, len(hex_str) * 4)
     value = int(hex_str, 16)
     if value >= (1 << (bits - 1)):
         value -= 1 << bits
@@ -125,7 +131,7 @@ def get_samples(msg: GeoMsg) -> tuple[Nanoseconds, dict[Channel, list[int]]]:
 
     result: dict[Channel, list[int]] = {}
     for k, v in buffer.items():
-        result[k] = [hex_to_signed(x, bits=16) for x in v]
+        result[k] = [hex_to_signed(x) for x in v]
     return msg.frames[0].timestamp_ns, result
 
 

@@ -49,6 +49,7 @@ class GeoMsgFrame:
 
     _timestamp: dict[str, int]
     _channels: dict[Channel, dict[str, Any]]
+    _bytes: int = 0
 
     @property
     def timestamp(self) -> int:
@@ -57,6 +58,10 @@ class GeoMsgFrame:
     @property
     def timestamp_ns(self) -> int:
         return self._timestamp['timestamp_ns']
+
+    @property
+    def frame_bytes(self) -> int:
+        return self._bytes
 
     def __iter__(self) -> Iterator[tuple[Channel, list[str]]]:
         return ((ch, data['DS']) for ch, data in self._channels.items())
@@ -202,7 +207,10 @@ class GeoMsgAssembler:
             # a complete frame
             header = self.serial_dq.popleft()
             segments = [self.serial_dq.popleft() for _ in range(len(self.channels))]
-            frame = GeoMsgFrame(header, {x['CN']: x for x in segments})
+            frame_bytes = header.get('_bytes', 0) + sum(
+                s.get('_bytes', 0) for s in segments
+            )
+            frame = GeoMsgFrame(header, {x['CN']: x for x in segments}, frame_bytes)
             self.frame_dq.append(frame)
         else:
             # we should have enough serial messages, but cannot assemble a complete frame
@@ -282,9 +290,10 @@ def parse_buffer(
             if not isinstance(msg, dict):
                 buffer = buffer[idx:].lstrip()
                 continue
-            messages.append(msg)
-            # remove the processed message and any leading whitespace
+            pre_len = len(buffer)
             buffer = buffer[idx:].lstrip()
+            msg['_bytes'] = pre_len - len(buffer)
+            messages.append(msg)
         except json.JSONDecodeError:
             # find the next possible start of a JSON object
             start_idx = buffer.find('{')
@@ -405,7 +414,14 @@ def read_geophone(  # noqa: C901
                     if geo_msg:
                         msg_queue.put(geo_msg)
                         t1 = geo_msg.frames[0].timestamp_ns
-                        print(f'cap_to_pub latency: {(recv_time_ns - t1) / 1e6:.2f} ms')
+                        total_bytes = sum(f.frame_bytes for f in geo_msg.frames)
+                        # 8N1 = 10 bits per byte
+                        tx_ms = total_bytes * 10 / baudrate * 1000
+                        print(
+                            f'cap_to_pub latency: {(recv_time_ns - t1) / 1e6:.2f} ms'
+                            f' | frame_bytes: {total_bytes}'
+                            f' | tx_time: {tx_ms:.2f} ms'
+                        )
 
             if _RAWSHAKE_DEBUG:
                 logger.debug(f'ASMB | {assembler}')

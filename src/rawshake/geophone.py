@@ -147,6 +147,13 @@ class GeoMsgAssembler:
         Number of frames to collect for a complete message
     frame_interval : int, optional
         Frame length in milliseconds, by default 250
+    poll_interval : float, optional
+        Serial port poll interval in seconds, by default 0.1. Used to estimate
+        the average time data spends waiting in the UART buffer before being read.
+    serial_tx_ns : int, optional
+        Estimated time in nanoseconds to transmit one complete frame over the
+        serial link, by default 0. Should be computed by the caller from the
+        baudrate and expected frame size.
 
     Notes
     -----
@@ -160,6 +167,8 @@ class GeoMsgAssembler:
         device_type: str,
         n_frames: int,
         frame_interval: int = 250,
+        poll_interval: float = 0.1,
+        serial_tx_ns: int = 0,
     ):
         self.device_type: str = device_type
         self.n_frames: int = n_frames
@@ -181,15 +190,36 @@ class GeoMsgAssembler:
         self._wall_epoch_ns: int | None = None
         self._device_epoch_ms: int | None = None
 
+        # Pre-compute the one-time calibration correction to subtract from wall
+        # clock at anchor time. The MSEC value represents the capture time of
+        # the data on the device, but time.time_ns() is called after the data
+        # has spent some time in the serial buffer and been parsed.
+        #
+        # Two components:
+        #   poll_interval / 2  -- average time data sits in the UART buffer
+        #                         before the poll loop reads it; actual wait
+        #                         is uniform in [0, poll_interval], so this
+        #                         correction removes the mean bias while leaving
+        #                         a residual one-time anchor error of up to
+        #                         +/-poll_interval/2 (~50ms at defaults).
+        #
+        #   serial_tx_ns       -- time to clock out one complete frame over the
+        #                         wire; computed by the caller from baudrate and
+        #                         frame size so the assembler need not know the
+        #                         physical link parameters.
+        #
+        # After correction the anchor error is approximately:
+        #   bias  ~= 0  (mean removed)
+        #   sigma ~= poll_interval / 2 (~50ms at defaults)
+        self._calibration_correction_ns: int = (
+            int(poll_interval * 1_000_000_000) // 2 + serial_tx_ns
+        )
+
     def _calibrated_timestamp_ns(self, msec: int) -> int:
         if self._wall_epoch_ns is None:
-            # First MSEC seen: anchor device clock to wall clock.
-            # The data was captured at device time `msec`; we receive it
-            # slightly later due to serial latency + poll jitter, but we
-            # record the offset once and never re-sample it, so all subsequent
-            # timestamps move with the stable device clock instead of drifting
-            # with per-message time.time_ns() calls.
-            self._wall_epoch_ns = time.time_ns()
+            # First MSEC seen: anchor device clock to wall clock, corrected for
+            # the expected receive latency (see _calibration_correction_ns).
+            self._wall_epoch_ns = time.time_ns() - self._calibration_correction_ns
             self._device_epoch_ms = msec
 
         assert self._wall_epoch_ns is not None and self._device_epoch_ms is not None
@@ -401,7 +431,15 @@ def read_geophone(  # noqa: C901
                     # initialize assembler
                     # Example: 'RS1D-8-4.11'
                     device_type = msg['MA'].split('-')[0]
-                    assembler = GeoMsgAssembler(device_type, n_frames, frame_interval)
+                    n_segments = 1 + len(DEVICE_CHANNELS.get(device_type, []))
+                    serial_tx_ns = int(n_segments * 250 * 8 * 1_000_000_000 / baudrate)
+                    assembler = GeoMsgAssembler(
+                        device_type,
+                        n_frames,
+                        frame_interval,
+                        poll_interval=poll_interval,
+                        serial_tx_ns=serial_tx_ns,
+                    )
 
                 i = f'M{i}'
                 if _RAWSHAKE_DEBUG:

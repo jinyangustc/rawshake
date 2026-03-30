@@ -184,7 +184,8 @@ class GeoMsgAssembler:
 
     def add(self, serial_msg: dict[str, Any], recv_time_ns: int) -> None:
         if 'MSEC' in serial_msg:
-            serial_msg['timestamp_ns'] = recv_time_ns - self._tx_offset_ns
+            # serial_msg['timestamp_ns'] = recv_time_ns - self._tx_offset_ns
+            serial_msg['timestamp_ns'] = recv_time_ns
         self.serial_dq.append(serial_msg)
 
         # seek the beginning of a frame

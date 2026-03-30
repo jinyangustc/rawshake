@@ -164,12 +164,10 @@ class GeoMsgAssembler:
         device_type: str,
         n_frames: int,
         frame_interval: int = 250,
-        calibration_frames: int = 4,
     ):
         self.device_type: str = device_type
         self.n_frames: int = n_frames
         self.frame_interval: int = frame_interval
-        self.calibration_frames: int = calibration_frames
 
         if device_type not in DEVICE_CHANNELS:
             raise ValueError(f'unsupported device type: {device_type}')
@@ -181,33 +179,31 @@ class GeoMsgAssembler:
         self.serial_dq: deque[dict[str, Any]] = deque()
         self.frame_dq: deque[GeoMsgFrame] = deque()
 
-        # Clock calibration: for each of the first `calibration_frames` MSEC
-        # packets received, record offset = time.time_ns() - msec * 1_000_000.
-        # This offset absorbs all receive latency (poll jitter + serial TX time)
-        # as a one-time sample. We average the N samples to reduce the variance
-        # from poll-interval jitter, then lock _wall_offset_ns.
+        # Clock calibration: anchor the device MSEC counter to wall clock once
+        # we confirm two consecutive MSECs, then derive all timestamps from the
+        # stable device-clock delta.
         #
-        # After lock: timestamp_ns = msec * 1_000_000 + _wall_offset_ns
-        # Residual error: ~poll_interval / (2 * sqrt(N)) instead of poll_interval / 2.
-        self._calibration_offsets: list[int] = []
+        # We defer anchoring to M1 (the second consecutive MSEC) rather than M0
+        # because M1 just arrived — its buffer wait is [0, poll_interval]. M0 may
+        # have been sitting in the buffer alongside M1, making its effective wait
+        # up to frame_interval + poll_interval longer. No parameter estimation needed.
+        #
+        # Residual one-time anchor error: [0, poll_interval] (~100ms at defaults).
+        # After calibration: ts_ns = msec * 1_000_000 + _wall_offset_ns
+        self._prev_msec: int | None = None
         self._wall_offset_ns: int | None = None
 
     def _calibrated_timestamp_ns(self, msec: int) -> int:
-        now_ns = time.time_ns()
         if self._wall_offset_ns is None:
-            self._calibration_offsets.append(now_ns - msec * 1_000_000)
-            if len(self._calibration_offsets) >= self.calibration_frames:
-                self._wall_offset_ns = sum(self._calibration_offsets) // len(
-                    self._calibration_offsets
-                )
-                logger.debug(
-                    f'Clock calibrated: offset={self._wall_offset_ns} ns '
-                    f'from {len(self._calibration_offsets)} frames'
-                )
+            current_offset = time.time_ns() - msec * 1_000_000
+            if (
+                self._prev_msec is not None
+                and msec - self._prev_msec == self.frame_interval
+            ):
+                self._wall_offset_ns = current_offset
             else:
-                # Still calibrating: use the current sample's offset as a
-                # best-effort estimate so early frames get a timestamp.
-                return now_ns
+                self._prev_msec = msec
+            return msec * 1_000_000 + current_offset
         return msec * 1_000_000 + self._wall_offset_ns
 
     def add(self, serial_msg: dict[str, Any]) -> None:

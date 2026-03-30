@@ -190,17 +190,28 @@ class GeoMsgAssembler:
         self._wall_offset_ns: int | None = None
 
     def _calibrated_timestamp_ns(self, msec: int, recv_time_ns: int) -> int:
-        if self._wall_offset_ns is None:
-            current_offset = recv_time_ns - msec * 1_000_000
-            if (
-                self._prev_msec is not None
-                and msec - self._prev_msec == self.frame_interval
-            ):
-                self._wall_offset_ns = current_offset
-            else:
-                self._prev_msec = msec
-            return msec * 1_000_000 + current_offset
-        return msec * 1_000_000 + self._wall_offset_ns
+        # if self._wall_offset_ns is None:
+        #     current_offset = recv_time_ns - msec * 1_000_000
+        #     if (
+        #         self._prev_msec is not None
+        #         and msec - self._prev_msec == self.frame_interval
+        #     ):
+        #         # Shift back by one frame_interval: recv_time_ns is stamped
+        #         # after the device has spent frame_interval collecting samples
+        #         # and then transmitted them. Subtracting frame_interval moves
+        #         # ts_ns to approximately the first sample's wall-clock time.
+        #         # Residual error: tx_time (~13ms RS1D, ~46ms RS4D).
+        #         self._wall_offset_ns = current_offset - self.frame_interval * 1_000_000
+        #     else:
+        #         self._prev_msec = msec
+        #     return msec * 1_000_000 + current_offset
+        # return msec * 1_000_000 + self._wall_offset_ns
+        if self._prev_msec is not None:
+            assert msec - self._prev_msec == self.frame_interval, (
+                f'MSEC not increasing by frame_interval: {self._prev_msec} -> {msec}'
+            )
+        self._prev_msec = msec
+        return recv_time_ns - (self.frame_interval * 1_000_000)
 
     def add(self, serial_msg: dict[str, Any], recv_time_ns: int) -> None:
         if 'MSEC' in serial_msg:

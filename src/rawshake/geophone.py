@@ -180,22 +180,11 @@ class GeoMsgAssembler:
         self.serial_dq: deque[dict[str, Any]] = deque()
         self.frame_dq: deque[GeoMsgFrame] = deque()
 
-        self._prev_msec: int | None = None
         self._tx_offset_ns: int = _TX_OFFSET_NS[device_type]
-
-    def _calibrated_timestamp_ns(self, msec: int, recv_time_ns: int) -> int:
-        if self._prev_msec is not None:
-            assert msec - self._prev_msec == self.frame_interval, (
-                f'MSEC not increasing by frame_interval: {self._prev_msec} -> {msec}'
-            )
-        self._prev_msec = msec
-        return recv_time_ns - (self.frame_interval * 1_000_000 + self._tx_offset_ns)
 
     def add(self, serial_msg: dict[str, Any], recv_time_ns: int) -> None:
         if 'MSEC' in serial_msg:
-            serial_msg['timestamp_ns'] = self._calibrated_timestamp_ns(
-                serial_msg['MSEC'], recv_time_ns
-            )
+            serial_msg['timestamp_ns'] = recv_time_ns - self._tx_offset_ns
         self.serial_dq.append(serial_msg)
 
         # seek the beginning of a frame

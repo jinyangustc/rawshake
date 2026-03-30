@@ -19,10 +19,6 @@ DEVICE_CHANNELS: dict[str, list[Channel]] = {
     'RS4D': ['EH3', 'EN1', 'EN2', 'EN3'],
 }
 
-_TX_OFFSET_NS: dict[str, int] = {
-    'RS1D': 18_000_000,
-    'RS4D': 67_000_000,
-}
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -185,13 +181,13 @@ class GeoMsgAssembler:
         self.serial_dq: deque[dict[str, Any]] = deque()
         self.frame_dq: deque[GeoMsgFrame] = deque()
 
-        self._tx_offset_ns: int = _TX_OFFSET_NS[device_type]
+        self._tx_offset_ns: int = 0
 
     def add(self, serial_msg: dict[str, Any], recv_time_ns: int) -> None:
         serial_msg['_recv_ns'] = recv_time_ns
         if 'MSEC' in serial_msg:
-            # serial_msg['timestamp_ns'] = recv_time_ns - self._tx_offset_ns
-            serial_msg['timestamp_ns'] = recv_time_ns
+            serial_msg['timestamp_ns'] = recv_time_ns - self._tx_offset_ns
+            # serial_msg['timestamp_ns'] = recv_time_ns
         self.serial_dq.append(serial_msg)
 
         # seek the beginning of a frame
@@ -241,7 +237,20 @@ class GeoMsgAssembler:
 
         frames = [self.frame_dq.popleft() for _ in range(self.n_frames)]
         msg = GeoMsg(frames, self.frame_interval, self.n_frames)
+
+        # --- calibrate TX offset from measured per-frame timing ---
+        tx_durations = [
+            f.last_recv_ns - f.timestamp_ns for f in frames if f.last_recv_ns
+        ]
+        if tx_durations:
+            avg_tx_ns = sum(tx_durations) // len(tx_durations)
+            self._tx_offset_ns = self.frame_interval * 1_000_000 - avg_tx_ns
+
         return msg
+
+    @property
+    def tx_offset_ns(self) -> int:
+        return self._tx_offset_ns
 
     def __repr__(self) -> str:
         serial_buffer: list[str] = []
@@ -411,17 +420,7 @@ def read_geophone(  # noqa: C901
 
                     if geo_msg:
                         msg_queue.put(geo_msg)
-                        first_recv = geo_msg.frames[0].timestamp_ns
-                        last_recv = geo_msg.frames[-1].last_recv_ns
-                        span_ms = (last_recv - first_recv) / 1e6
-                        per_frame = [
-                            (f.last_recv_ns - f.timestamp_ns) / 1e6
-                            for f in geo_msg.frames
-                        ]
-                        print(
-                            f'span: {span_ms:.2f} ms'
-                            f' | per-frame (msec->last_seg): {[f"{x:.1f}" for x in per_frame]}'
-                        )
+                        print(f'tx_offset: {assembler.tx_offset_ns / 1e6:.2f} ms')
 
             if _RAWSHAKE_DEBUG:
                 logger.debug(f'ASMB | {assembler}')

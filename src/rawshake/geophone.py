@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import queue
+import select as _select
 import threading
 import time
 from collections import defaultdict, deque
@@ -392,9 +393,14 @@ def read_geophone(  # noqa: C901
     The function can be interrupted by setting the stop_event or with Ctrl+C (KeyboardInterrupt).
     """
     try:
-        # timeout doubles as the stop-event check interval: ser.read() blocks
-        # until bytes arrive or timeout expires, so no explicit sleep is needed.
-        ser = serial.Serial(port, baudrate, timeout=read_timeout)
+        # pyserial handles termios setup (baud, raw mode, etc.); we use the
+        # file descriptor directly for reads to avoid pyserial's Python-level
+        # select/timeout polling loop which dominates CPU on continuous streams.
+        ser = serial.Serial(port, baudrate)
+        fd = ser.fd
+        assert fd is not None, (
+            'Failed to get file descriptor from serial port: ser.fd is None'
+        )
         logger.info(f'Connected to {port} at {baudrate} baud')
     except Exception as e:
         logger.error(f'Error opening {port}: {e}')
@@ -407,12 +413,13 @@ def read_geophone(  # noqa: C901
 
     try:
         while not (stop_event and stop_event.is_set()):
-            if _RAWSHAKE_DEBUG:
-                logger.debug(f' in waiting: {ser.in_waiting} '.center(80, '-'))
-            # Block until at least 1 byte arrives (or timeout for stop-event check).
-            # Read all buffered bytes in one call to minimise subsequent read calls.
-            raw_data = ser.read(ser.in_waiting or 1)
+            # Block in kernel until data arrives or timeout expires (zero CPU
+            # while waiting). Then drain the kernel buffer in one syscall.
+            ready, _, _ = _select.select([fd], [], [], read_timeout)
+            if not ready:
+                continue  # timeout — check stop_event and retry
             recv_time_ns = time.time_ns()
+            raw_data = os.read(fd, 4096)
             if not raw_data:
                 continue
 

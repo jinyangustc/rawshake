@@ -182,6 +182,7 @@ class GeoMsgAssembler:
         self.frame_dq: deque[GeoMsgFrame] = deque()
 
         self._capture_delay_ns: int = 0
+        self._calibrated: bool = False
 
     def add(self, serial_msg: dict[str, Any], recv_time_ns: int) -> None:
         serial_msg['_recv_ns'] = recv_time_ns
@@ -236,21 +237,24 @@ class GeoMsgAssembler:
                 return None
 
         frames = [self.frame_dq.popleft() for _ in range(self.n_frames)]
-        msg = GeoMsg(frames, self.frame_interval, self.n_frames)
 
-        # --- calibrate capture delay from raw (uncorrected) recv times ---
-        # capture_delay = frame_interval - avg TX duration per frame
-        # This is the idle gap where the device captures data before transmitting.
-        tx_durations = [
-            f.last_recv_ns - f._timestamp['_msec_recv_ns']
-            for f in frames
-            if f.last_recv_ns and '_msec_recv_ns' in f._timestamp
-        ]
-        if tx_durations:
-            avg_tx_ns = sum(tx_durations) // len(tx_durations)
-            self._capture_delay_ns = self.frame_interval * 1_000_000 - avg_tx_ns
+        if not self._calibrated:
+            # --- calibrate capture delay from raw (uncorrected) recv times ---
+            # capture_delay = frame_interval - avg TX duration per frame
+            # This is the idle gap where the device captures data before transmitting.
+            tx_durations = [
+                f.last_recv_ns - f._timestamp['_msec_recv_ns']
+                for f in frames
+                if f.last_recv_ns and '_msec_recv_ns' in f._timestamp
+            ]
+            if tx_durations:
+                avg_tx_ns = sum(tx_durations) // len(tx_durations)
+                self._capture_delay_ns = self.frame_interval * 1_000_000 - avg_tx_ns
+                self._calibrated = True
+            # Drop the first message used for calibration
+            return None
 
-        return msg
+        return GeoMsg(frames, self.frame_interval, self.n_frames)
 
     @property
     def capture_delay_ns(self) -> int:

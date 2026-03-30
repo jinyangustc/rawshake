@@ -1,6 +1,6 @@
 """RawShake package for reading geophone data."""
 
-__version__ = '0.1.4'
+__version__ = '0.1.5'
 
 from .geophone import (
     GeoReader,

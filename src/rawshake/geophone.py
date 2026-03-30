@@ -169,7 +169,31 @@ class GeoMsgAssembler:
         self.serial_dq: deque[dict[str, Any]] = deque()
         self.frame_dq: deque[GeoMsgFrame] = deque()
 
+        # Clock calibration: anchor the device's MSEC counter to wall clock once
+        # at the first received frame, then derive all subsequent timestamps from
+        # the stable device-clock delta (mirrors the PA-clock calibration in mic.py).
+        self._wall_epoch_ns: int | None = None
+        self._device_epoch_ms: int | None = None
+
+    def _calibrated_timestamp_ns(self, msec: int) -> int:
+        if self._wall_epoch_ns is None:
+            # First MSEC seen: anchor device clock to wall clock.
+            # The data was captured at device time `msec`; we receive it
+            # slightly later due to serial latency + poll jitter, but we
+            # record the offset once and never re-sample it, so all subsequent
+            # timestamps move with the stable device clock instead of drifting
+            # with per-message time.time_ns() calls.
+            self._wall_epoch_ns = time.time_ns()
+            self._device_epoch_ms = msec
+
+        assert self._wall_epoch_ns is not None and self._device_epoch_ms is not None
+        return self._wall_epoch_ns + (msec - self._device_epoch_ms) * 1_000_000
+
     def add(self, serial_msg: dict[str, Any]) -> None:
+        if 'MSEC' in serial_msg:
+            serial_msg['timestamp_ns'] = self._calibrated_timestamp_ns(
+                serial_msg['MSEC']
+            )
         self.serial_dq.append(serial_msg)
 
         # seek the beginning of a frame
@@ -266,8 +290,6 @@ def parse_buffer(
             if not isinstance(msg, dict):
                 buffer = buffer[idx:].lstrip()
                 continue
-            if 'MSEC' in msg:
-                msg['timestamp_ns'] = time.time_ns()
             messages.append(msg)
             # remove the processed message and any leading whitespace
             buffer = buffer[idx:].lstrip()
@@ -293,7 +315,7 @@ def parse_buffer(
     return messages, buffer
 
 
-def read_geophone(
+def read_geophone(  # noqa: C901
     msg_queue: queue.Queue[GeoMsg],
     port: str = '/dev/serial0',
     baudrate: int = 230_400,

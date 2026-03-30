@@ -147,13 +147,10 @@ class GeoMsgAssembler:
         Number of frames to collect for a complete message
     frame_interval : int, optional
         Frame length in milliseconds, by default 250
-    poll_interval : float, optional
-        Serial port poll interval in seconds, by default 0.1. Used to estimate
-        the average time data spends waiting in the UART buffer before being read.
-    serial_tx_ns : int, optional
-        Estimated time in nanoseconds to transmit one complete frame over the
-        serial link, by default 0. Should be computed by the caller from the
-        baudrate and expected frame size.
+    calibration_frames : int, optional
+        Number of MSEC packets to average for the initial wall-clock offset,
+        by default 4. More frames reduce poll-jitter variance in the anchor
+        (error scales as poll_interval / (2 * sqrt(N))).
 
     Notes
     -----
@@ -167,12 +164,12 @@ class GeoMsgAssembler:
         device_type: str,
         n_frames: int,
         frame_interval: int = 250,
-        poll_interval: float = 0.1,
-        serial_tx_ns: int = 0,
+        calibration_frames: int = 4,
     ):
         self.device_type: str = device_type
         self.n_frames: int = n_frames
         self.frame_interval: int = frame_interval
+        self.calibration_frames: int = calibration_frames
 
         if device_type not in DEVICE_CHANNELS:
             raise ValueError(f'unsupported device type: {device_type}')
@@ -184,46 +181,34 @@ class GeoMsgAssembler:
         self.serial_dq: deque[dict[str, Any]] = deque()
         self.frame_dq: deque[GeoMsgFrame] = deque()
 
-        # Clock calibration: anchor the device's MSEC counter to wall clock once
-        # at the first received frame, then derive all subsequent timestamps from
-        # the stable device-clock delta (mirrors the PA-clock calibration in mic.py).
-        self._wall_epoch_ns: int | None = None
-        self._device_epoch_ms: int | None = None
-
-        # Pre-compute the one-time calibration correction to subtract from wall
-        # clock at anchor time. The MSEC value represents the capture time of
-        # the data on the device, but time.time_ns() is called after the data
-        # has spent some time in the serial buffer and been parsed.
+        # Clock calibration: for each of the first `calibration_frames` MSEC
+        # packets received, record offset = time.time_ns() - msec * 1_000_000.
+        # This offset absorbs all receive latency (poll jitter + serial TX time)
+        # as a one-time sample. We average the N samples to reduce the variance
+        # from poll-interval jitter, then lock _wall_offset_ns.
         #
-        # Two components:
-        #   poll_interval / 2  -- average time data sits in the UART buffer
-        #                         before the poll loop reads it; actual wait
-        #                         is uniform in [0, poll_interval], so this
-        #                         correction removes the mean bias while leaving
-        #                         a residual one-time anchor error of up to
-        #                         +/-poll_interval/2 (~50ms at defaults).
-        #
-        #   serial_tx_ns       -- time to clock out one complete frame over the
-        #                         wire; computed by the caller from baudrate and
-        #                         frame size so the assembler need not know the
-        #                         physical link parameters.
-        #
-        # After correction the anchor error is approximately:
-        #   bias  ~= 0  (mean removed)
-        #   sigma ~= poll_interval / 2 (~50ms at defaults)
-        self._calibration_correction_ns: int = (
-            int(poll_interval * 1_000_000_000) // 2 + serial_tx_ns
-        )
+        # After lock: timestamp_ns = msec * 1_000_000 + _wall_offset_ns
+        # Residual error: ~poll_interval / (2 * sqrt(N)) instead of poll_interval / 2.
+        self._calibration_offsets: list[int] = []
+        self._wall_offset_ns: int | None = None
 
     def _calibrated_timestamp_ns(self, msec: int) -> int:
-        if self._wall_epoch_ns is None:
-            # First MSEC seen: anchor device clock to wall clock, corrected for
-            # the expected receive latency (see _calibration_correction_ns).
-            self._wall_epoch_ns = time.time_ns() - self._calibration_correction_ns
-            self._device_epoch_ms = msec
-
-        assert self._wall_epoch_ns is not None and self._device_epoch_ms is not None
-        return self._wall_epoch_ns + (msec - self._device_epoch_ms) * 1_000_000
+        now_ns = time.time_ns()
+        if self._wall_offset_ns is None:
+            self._calibration_offsets.append(now_ns - msec * 1_000_000)
+            if len(self._calibration_offsets) >= self.calibration_frames:
+                self._wall_offset_ns = sum(self._calibration_offsets) // len(
+                    self._calibration_offsets
+                )
+                logger.debug(
+                    f'Clock calibrated: offset={self._wall_offset_ns} ns '
+                    f'from {len(self._calibration_offsets)} frames'
+                )
+            else:
+                # Still calibrating: use the current sample's offset as a
+                # best-effort estimate so early frames get a timestamp.
+                return now_ns
+        return msec * 1_000_000 + self._wall_offset_ns
 
     def add(self, serial_msg: dict[str, Any]) -> None:
         if 'MSEC' in serial_msg:
@@ -431,14 +416,10 @@ def read_geophone(  # noqa: C901
                     # initialize assembler
                     # Example: 'RS1D-8-4.11'
                     device_type = msg['MA'].split('-')[0]
-                    n_segments = 1 + len(DEVICE_CHANNELS.get(device_type, []))
-                    serial_tx_ns = int(n_segments * 250 * 8 * 1_000_000_000 / baudrate)
                     assembler = GeoMsgAssembler(
                         device_type,
                         n_frames,
                         frame_interval,
-                        poll_interval=poll_interval,
-                        serial_tx_ns=serial_tx_ns,
                     )
 
                 i = f'M{i}'

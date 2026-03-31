@@ -125,6 +125,17 @@ def hex_to_signed(hex_str: str) -> int:
     return value
 
 
+def _hex_to_signed_checked(hex_str: str) -> int:
+    """hex_to_signed with sign-extension validation (active when RAWSHAKE_DEBUG=1)."""
+    if len(hex_str) > 6:
+        logger.debug('sign-extended hex received: %r', hex_str)
+        if not hex_str.startswith('FF'):
+            logger.warning(
+                'unexpected sign extension in %r: expected FF prefix', hex_str
+            )
+    return hex_to_signed(hex_str)
+
+
 def get_samples(msg: GeoMsg) -> tuple[Nanoseconds, dict[Channel, list[int]]]:
     """
     Extract timestamp and sample data from a GeoMsg object.
@@ -158,9 +169,10 @@ def get_samples(msg: GeoMsg) -> tuple[Nanoseconds, dict[Channel, list[int]]]:
         for ch, samples in frame:
             buffer[ch].extend(samples)
 
+    _decode = _hex_to_signed_checked if _RAWSHAKE_DEBUG else hex_to_signed
     result: dict[Channel, list[int]] = {}
     for k, v in buffer.items():
-        result[k] = [hex_to_signed(x) for x in v]
+        result[k] = [_decode(x) for x in v]
     return msg.frames[0].timestamp_ns, result
 
 

@@ -466,7 +466,7 @@ def read_geophone(  # noqa: C901
 
             if _RAWSHAKE_DEBUG:
                 logger.debug(f'ASMB | {assembler}')
-            time.sleep(0.1)
+            time.sleep(0.01)
 
     except KeyboardInterrupt:
         logger.info('Exiting read_geophone')

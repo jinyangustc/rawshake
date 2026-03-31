@@ -1,6 +1,6 @@
 """RawShake package for reading geophone data."""
 
-__version__ = '0.1.12'
+__version__ = '0.1.13'
 
 from .geophone import GeoReader, RawDecoder, read_geophone
 from .processing import RollingConditioner

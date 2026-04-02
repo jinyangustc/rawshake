@@ -595,12 +595,18 @@ class GeoReader:
         """
         if self._error is not None:
             raise self._error
-        try:
-            return self.msg_queue.get(timeout=timeout)
-        except queue.Empty:
-            if self._error is not None:
-                raise self._error
-            return None
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            wait = 1.0 if deadline is None else min(1.0, deadline - time.monotonic())
+            if wait <= 0:
+                return None
+            try:
+                return self.msg_queue.get(timeout=wait)
+            except queue.Empty:
+                if self._error is not None:
+                    raise self._error
+                if deadline is not None:
+                    return None
 
 
 def _main():

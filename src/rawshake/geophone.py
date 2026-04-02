@@ -235,7 +235,12 @@ class GeoMsgAssembler:
             # not enough data
             return
 
-        channels = [self.serial_dq[i + 1]['CN'] for i in range(len(self.channels))]
+        try:
+            channels = [self.serial_dq[i + 1]['CN'] for i in range(len(self.channels))]
+        except KeyError:
+            header = self.serial_dq.popleft()
+            logger.warning(f'Drop {header["MSEC"]} at {time.time_ns()}')
+            return
         if sorted(channels) == self.channels:
             # a complete frame
             header = self.serial_dq.popleft()
@@ -431,14 +436,10 @@ def read_geophone(  # noqa: C901
 
     The function can be interrupted by setting the stop_event or with Ctrl+C (KeyboardInterrupt).
     """
-    try:
-        # timeout doubles as the stop-event check interval: ser.read() blocks
-        # until bytes arrive or timeout expires, so no explicit sleep is needed.
-        ser = serial.Serial(port, baudrate, timeout=read_timeout)
-        logger.info(f'Connected to {port} at {baudrate} baud')
-    except Exception as e:
-        logger.error(f'Error opening {port}: {e}')
-        return
+    # timeout doubles as the stop-event check interval: ser.read() blocks
+    # until bytes arrive or timeout expires, so no explicit sleep is needed.
+    ser = serial.Serial(port, baudrate, timeout=read_timeout)
+    logger.info(f'Connected to {port} at {baudrate} baud')
 
     buffer = ''
     if decoder is None:
@@ -498,8 +499,6 @@ def read_geophone(  # noqa: C901
 
     except KeyboardInterrupt:
         logger.info('Exiting read_geophone')
-    except Exception as e:
-        logger.error(f'Error reading from port {port}: {e}')
     finally:
         ser.close()
         logger.info(f'Connection to {port} closed.')
@@ -544,20 +543,27 @@ class GeoReader:
     ):
         self.msg_queue: queue.Queue[GeoMsg] = queue.Queue()
         self.stop_event: threading.Event = threading.Event()
+        self._error: BaseException | None = None
+        self._kwargs = {
+            'port': port,
+            'baudrate': baudrate,
+            'read_timeout': read_timeout,
+            'n_frames': n_frames,
+            'frame_interval': frame_interval,
+            'stop_event': self.stop_event,
+            'decoder': decoder,
+        }
         self.thread: threading.Thread = threading.Thread(
-            target=read_geophone,
-            args=(self.msg_queue,),
-            kwargs={
-                'port': port,
-                'baudrate': baudrate,
-                'read_timeout': read_timeout,
-                'n_frames': n_frames,
-                'frame_interval': frame_interval,
-                'stop_event': self.stop_event,
-                'decoder': decoder,
-            },
+            target=self._run,
             daemon=True,
         )
+
+    def _run(self) -> None:
+        try:
+            read_geophone(self.msg_queue, **self._kwargs)
+        except Exception as e:
+            self._error = e
+            logger.error(f'Reader thread crashed: {e}')
 
     def start(self):
         """Start the reader thread"""
@@ -587,9 +593,13 @@ class GeoReader:
         -----
         This method is thread-safe and can be called from any thread.
         """
+        if self._error is not None:
+            raise self._error
         try:
             return self.msg_queue.get(timeout=timeout)
         except queue.Empty:
+            if self._error is not None:
+                raise self._error
             return None
 
 

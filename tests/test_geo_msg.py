@@ -40,3 +40,76 @@ def test_parse(timestamp_msg, rs1d_msg, rs4d_msg):
     good_rs4d_msg, buffer = parse_buffer(rs4d_msg, decoder)
     assert len(good_rs4d_msg) == 0
     assert len(buffer) == 0
+
+
+class TestParseBufferCorruption:
+    """Tests for parse_buffer corruption recovery."""
+
+    def setup_method(self):
+        self.decoder = json.JSONDecoder()
+        self.valid_msg = '{"MSEC": 1000,"LS": 0}'
+
+    def test_corrupted_brace_before_valid_msg(self):
+        """Corrupted '{garbage' followed by a valid message -> skip and recover."""
+        buffer = '{garbage' + self.valid_msg
+        msgs, remaining = parse_buffer(buffer, self.decoder)
+        assert len(msgs) == 1
+        assert msgs[0]['MSEC'] == 1000
+        assert remaining == ''
+
+    def test_corrupted_brace_before_multiple_valid(self):
+        """Corrupted block followed by multiple valid messages."""
+        valid2 = '{"MSEC": 2000,"LS": 0}'
+        buffer = '{corrupt' + self.valid_msg + valid2
+        msgs, remaining = parse_buffer(buffer, self.decoder)
+        assert len(msgs) == 2
+        assert msgs[0]['MSEC'] == 1000
+        assert msgs[1]['MSEC'] == 2000
+        assert remaining == ''
+
+    def test_last_brace_incomplete_waits(self):
+        """A single incomplete '{...' at end of buffer -> wait for more data."""
+        buffer = '{"MSEC": 100'
+        msgs, remaining = parse_buffer(buffer, self.decoder)
+        assert len(msgs) == 0
+        assert remaining == buffer
+
+    def test_valid_then_incomplete_tail(self):
+        """Valid message followed by incomplete tail -> parse valid, keep tail."""
+        buffer = self.valid_msg + '{"MSEC": 200'
+        msgs, remaining = parse_buffer(buffer, self.decoder)
+        assert len(msgs) == 1
+        assert msgs[0]['MSEC'] == 1000
+        assert remaining == '{"MSEC": 200'
+
+    def test_oversized_single_block_discarded(self):
+        """A single '{' followed by >_MAX_MSG_SIZE bytes -> discard."""
+        from rawshake.geophone import _MAX_MSG_SIZE
+
+        buffer = '{' + 'x' * _MAX_MSG_SIZE
+        msgs, remaining = parse_buffer(buffer, self.decoder)
+        assert len(msgs) == 0
+        assert remaining == ''
+
+    def test_non_brace_garbage_skipped(self):
+        """Non-'{' garbage before a valid message -> skip to next '{'."""
+        buffer = 'garbage' + self.valid_msg
+        msgs, remaining = parse_buffer(buffer, self.decoder)
+        assert len(msgs) == 1
+        assert msgs[0]['MSEC'] == 1000
+        assert remaining == ''
+
+    def test_incremental_recovery(self):
+        """Simulate incremental reads: corrupted head, then valid data arrives."""
+        # First read: only corrupted data, no second '{'
+        buffer = '{corrupt_data'
+        msgs, buffer = parse_buffer(buffer, self.decoder)
+        assert len(msgs) == 0
+        assert buffer == '{corrupt_data'  # waiting
+
+        # Second read: valid message arrives
+        buffer += self.valid_msg
+        msgs, buffer = parse_buffer(buffer, self.decoder)
+        assert len(msgs) == 1
+        assert msgs[0]['MSEC'] == 1000
+        assert buffer == ''

@@ -306,6 +306,9 @@ class GeoMsgAssembler:
         return f'serial_buffer={serial_buffer}, frame_buffer={frame_buffer}'
 
 
+_MAX_MSG_SIZE = 1024  # max bytes for a single JSON message; largest is ~641 bytes
+
+
 def parse_buffer(buffer: str, decoder: RawDecoder) -> tuple[list[dict[str, Any]], str]:
     """
     Parse complete JSON objects from the buffer.
@@ -330,6 +333,13 @@ def parse_buffer(buffer: str, decoder: RawDecoder) -> tuple[list[dict[str, Any]]
     -----
     The function attempts to parse complete JSON objects from the start of the buffer.
     Invalid messages and non-JSON data are filtered out.
+
+    Recovery from corruption relies on the fact that this protocol sends flat JSON
+    objects (no nested '{}').  Every '{' in the buffer is therefore the start of a
+    new message.  When decode fails at a '{' and another '{' exists later, the
+    current block is definitely garbage and is skipped.  Only when the failing '{'
+    is the last one in the buffer (possibly a genuinely incomplete message) do we
+    wait for more data.
     """
     messages: list[dict[str, Any]] = []
     idx = 0
@@ -347,13 +357,31 @@ def parse_buffer(buffer: str, decoder: RawDecoder) -> tuple[list[dict[str, Any]]
             idx = end_idx
         except json.JSONDecodeError:
             if buffer[idx] == '{':
-                # incomplete object, wait for more data
-                break
-            next_brace = buffer.find('{', idx + 1)
-            if next_brace == -1:
-                idx = length  # no valid start found, clear buffer
-                break
-            idx = next_brace
+                next_brace = buffer.find('{', idx + 1)
+                if next_brace != -1:
+                    # Another '{' ahead -> current block is corrupted, skip it.
+                    logger.warning(
+                        'Skipping corrupted data in buffer (%d bytes)',
+                        next_brace - idx,
+                    )
+                    idx = next_brace
+                elif length - idx > _MAX_MSG_SIZE:
+                    # Single '{' but far too large -> corrupted, clear buffer.
+                    logger.warning(
+                        'Discarding oversized incomplete block (%d bytes)',
+                        length - idx,
+                    )
+                    idx = length
+                    break
+                else:
+                    # Last '{' in a small buffer -> possibly incomplete, wait.
+                    break
+            else:
+                next_brace = buffer.find('{', idx + 1)
+                if next_brace == -1:
+                    idx = length  # no valid start found, clear buffer
+                    break
+                idx = next_brace
     return messages, buffer[idx:]
 
 
